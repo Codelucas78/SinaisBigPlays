@@ -1,166 +1,311 @@
 import React, { useState, useEffect } from 'react';
-import { TrendingUp, TrendingDown, Clock, Target, BarChart3, Activity, Trophy, XCircle, CheckCircle, Zap } from 'lucide-react';
+import { TrendingUp, TrendingDown, Clock, Target, BarChart3, Activity, Trophy, XCircle, CheckCircle, Zap, Settings, AlertCircle } from 'lucide-react';
 
 export default function IQSignalsAnalyzer() {
   const [mode, setMode] = useState('otc');
   const [loading, setLoading] = useState(false);
-  const [signal, setSignal] = useState(null);
+  const [signals, setSignals] = useState([]);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [history, setHistory] = useState([]);
   const [stats, setStats] = useState({ wins: 0, losses: 0 });
   const [analysisType, setAnalysisType] = useState('normal');
+  const [expiration, setExpiration] = useState('M1');
+  const [numberOfPairs, setNumberOfPairs] = useState(1);
+  const [selectedAssets, setSelectedAssets] = useState([]);
+  const [showSettings, setShowSettings] = useState(true);
+  const [nextCandleTime, setNextCandleTime] = useState(null);
+  const [canGenerateSignal, setCanGenerateSignal] = useState(true);
+  const [candleProgress, setCandleProgress] = useState(0);
 
   const assets = {
     otc: ['EURUSD-OTC', 'GBPUSD-OTC', 'USDJPY-OTC', 'AUDUSD-OTC', 'EURJPY-OTC', 'GBPJPY-OTC'],
     market: ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'GBPJPY', 'BTCUSD', 'ETHUSD']
   };
 
-  const patterns = [
-    { name: "Continuidade Alta", seq: "V-R-V-V-V", dir: "CALL", strength: "MUITO ALTA" },
-    { name: "Continuidade Baixa", seq: "R-V-R-R-R", dir: "PUT", strength: "MUITO ALTA" },
-    { name: "Reversão 2+3", seq: "R-R-V-V-V", dir: "CALL", strength: "ALTA" },
-    { name: "Reversão 2+3", seq: "V-V-R-R-R", dir: "PUT", strength: "ALTA" },
-    { name: "Dominância Verde", seq: "V-V-V-V-R", dir: "CALL", strength: "EXTREMA" },
-    { name: "Dominância Vermelha", seq: "R-R-R-R-V", dir: "PUT", strength: "EXTREMA" }
-  ];
+  const expirationTimes = {
+    M1: { label: '1 Minuto', minutes: 1 },
+    M5: { label: '5 Minutos', minutes: 5 },
+    M15: { label: '15 Minutos', minutes: 15 }
+  };
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  const getNextCandleTime = () => {
-    const next = new Date(currentTime);
-    next.setMinutes(currentTime.getMinutes() + 1);
-    next.setSeconds(0);
-    next.setMilliseconds(0);
-    return next;
+  useEffect(() => {
+    const availableAssets = assets[mode];
+    setSelectedAssets(availableAssets.slice(0, numberOfPairs));
+  }, [mode, numberOfPairs]);
+
+  useEffect(() => {
+    if (nextCandleTime) {
+      const now = new Date();
+      const timeUntilNextCandle = nextCandleTime.getTime() - now.getTime();
+      
+      if (timeUntilNextCandle <= 0) {
+        setCanGenerateSignal(true);
+        setNextCandleTime(null);
+        setCandleProgress(0);
+      } else {
+        const totalTime = expirationTimes[expiration].minutes * 60 * 1000;
+        const elapsed = totalTime - timeUntilNextCandle;
+        const progress = (elapsed / totalTime) * 100;
+        setCandleProgress(Math.min(progress, 100));
+      }
+    }
+  }, [currentTime, nextCandleTime, expiration]);
+
+  const getNextCandleCloseTime = () => {
+    const now = new Date();
+    const minutes = expirationTimes[expiration].minutes;
+    const nextClose = new Date(now);
+    const currentMinute = now.getMinutes();
+    
+    if (minutes === 1) {
+      nextClose.setMinutes(currentMinute + 1);
+      nextClose.setSeconds(0);
+    } else if (minutes === 5) {
+      const nextFiveMin = Math.ceil((currentMinute + 1) / 5) * 5;
+      nextClose.setMinutes(nextFiveMin);
+      nextClose.setSeconds(0);
+    } else if (minutes === 15) {
+      const nextFifteenMin = Math.ceil((currentMinute + 1) / 15) * 15;
+      nextClose.setMinutes(nextFifteenMin);
+      nextClose.setSeconds(0);
+    }
+    
+    nextClose.setMilliseconds(0);
+    if (nextClose <= now) {
+      nextClose.setHours(nextClose.getHours() + 1);
+    }
+    
+    return nextClose;
   };
 
   const formatTime = (date) => {
     return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   };
 
+  const formatTimeRemaining = (date) => {
+    const now = new Date();
+    const diff = date.getTime() - now.getTime();
+    if (diff <= 0) return "00:00";
+    const minutes = Math.floor(diff / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  };
+
+  const generateSignal = (asset, index, timestamp) => {
+    const patterns = [
+      { name: "Continuidade Alta", seq: "V-R-V-V-V", dir: "CALL", strength: "MUITO ALTA" },
+      { name: "Continuidade Baixa", seq: "R-V-R-R-R", dir: "PUT", strength: "MUITO ALTA" },
+      { name: "Martelo de Alta", seq: "R-R-R-R-MARTELO", dir: "CALL", strength: "EXTREMA" },
+      { name: "Martelo Invertido", seq: "V-V-V-V-MARTELO_INV", dir: "PUT", strength: "EXTREMA" },
+      { name: "Pavio Longo Alta", seq: "R-R-V-PAVIO-V", dir: "CALL", strength: "MUITO ALTA" }
+    ];
+
+    const selectedPattern = patterns[Math.floor(Math.random() * patterns.length)];
+    const accuracy = (82 + Math.random() * 13).toFixed(1);
+    const requestTime = new Date();
+    const candleCloseTime = getNextCandleCloseTime();
+    
+    const hasSpecial = Math.random() > 0.6;
+    const specialFeature = hasSpecial ? {
+      detected: true,
+      wickRatio: (3 + Math.random() * 2).toFixed(1),
+      description: `Pavio ${(3 + Math.random() * 2).toFixed(1)}x maior que o corpo detectado`
+    } : null;
+
+    return {
+      id: `${timestamp}-${asset}-${index}`,
+      asset,
+      direction: selectedPattern.dir,
+      accuracy,
+      pattern: selectedPattern.name,
+      candleSequence: selectedPattern.seq,
+      strength: selectedPattern.strength,
+      specialFeature,
+      reasoning: specialFeature 
+        ? `${selectedPattern.name} com padrão especial. ${specialFeature.description}`
+        : `Padrão ${selectedPattern.name} identificado no gráfico ${expirationTimes[expiration].label}`,
+      requestTime: formatTime(requestTime),
+      entryTime: formatTime(candleCloseTime),
+      candleCloseTime: candleCloseTime,
+      mode: mode.toUpperCase(),
+      expiration: expirationTimes[expiration].label,
+      timestamp: requestTime,
+      result: null,
+      type: 'BIGPLAYS'
+    };
+  };
+
   const analyzeBigPlays = () => {
+    if (selectedAssets.length === 0) {
+      alert('Selecione pelo menos um ativo!');
+      return;
+    }
+
+    if (!canGenerateSignal) {
+      alert(`Aguarde o fechamento da vela (${formatTimeRemaining(nextCandleTime)})`);
+      return;
+    }
+
     setLoading(true);
     setAnalysisType('bigplays');
 
     setTimeout(() => {
-      const selectedPattern = patterns[Math.floor(Math.random() * patterns.length)];
-      const selectedAssets = assets[mode];
-      const randomAsset = selectedAssets[Math.floor(Math.random() * selectedAssets.length)];
-      const accuracy = (82 + Math.random() * 13).toFixed(1);
-      const requestTime = new Date();
-      const entryTime = getNextCandleTime();
-      
-      const newSignal = {
-        id: Date.now(),
-        asset: randomAsset,
-        direction: selectedPattern.dir,
-        accuracy,
-        pattern: selectedPattern.name,
-        candleSequence: selectedPattern.seq,
-        strength: selectedPattern.strength,
-        reasoning: `Padrão ${selectedPattern.name} identificado com força ${selectedPattern.strength.toLowerCase()}. Sequência ${selectedPattern.seq} indica ponto de impulso para entrada ${selectedPattern.dir}.`,
-        requestTime: formatTime(requestTime),
-        entryTime: formatTime(entryTime),
-        mode: mode.toUpperCase(),
-        expiration: '1 Minuto (M1)',
-        timestamp: requestTime,
-        result: null,
-        type: 'BIGPLAYS'
-      };
+      const timestamp = Date.now();
+      const newSignals = selectedAssets.map((asset, index) => generateSignal(asset, index, timestamp));
 
-      setSignal(newSignal);
-      setHistory(prev => [newSignal, ...prev].slice(0, 10));
+      setSignals(newSignals);
+      setHistory(prev => [...newSignals, ...prev].slice(0, 30));
+      setNextCandleTime(getNextCandleCloseTime());
+      setCanGenerateSignal(false);
       setLoading(false);
     }, 1500);
   };
 
   const analyzeMarket = () => {
+    if (selectedAssets.length === 0) {
+      alert('Selecione pelo menos um ativo!');
+      return;
+    }
+
+    if (!canGenerateSignal) {
+      alert(`Aguarde o fechamento da vela (${formatTimeRemaining(nextCandleTime)})`);
+      return;
+    }
+
     setLoading(true);
     setAnalysisType('normal');
-    
-    setTimeout(() => {
-      const selectedAssets = assets[mode];
-      const randomAsset = selectedAssets[Math.floor(Math.random() * selectedAssets.length)];
-      const direction = Math.random() > 0.5 ? 'CALL' : 'PUT';
-      const accuracy = (75 + Math.random() * 20).toFixed(1);
-      const requestTime = new Date();
-      const entryTime = getNextCandleTime();
-      
-      const newSignal = {
-        id: Date.now(),
-        asset: randomAsset,
-        direction,
-        accuracy,
-        reasoning: "Análise baseada em padrões de mercado recentes e indicadores técnicos",
-        requestTime: formatTime(requestTime),
-        entryTime: formatTime(entryTime),
-        mode: mode.toUpperCase(),
-        expiration: '1 Minuto (M1)',
-        timestamp: requestTime,
-        result: null,
-        type: 'NORMAL'
-      };
 
-      setSignal(newSignal);
-      setHistory(prev => [newSignal, ...prev].slice(0, 10));
+    setTimeout(() => {
+      const timestamp = Date.now();
+      const candleCloseTime = getNextCandleCloseTime();
+      
+      const newSignals = selectedAssets.map((asset, index) => {
+        const direction = Math.random() > 0.5 ? 'CALL' : 'PUT';
+        const accuracy = (75 + Math.random() * 20).toFixed(1);
+        const requestTime = new Date();
+        
+        return {
+          id: `${timestamp}-${asset}-${index}`,
+          asset,
+          direction,
+          accuracy,
+          reasoning: `Análise técnica indica tendência ${direction === 'CALL' ? 'altista' : 'baixista'}`,
+          requestTime: formatTime(requestTime),
+          entryTime: formatTime(candleCloseTime),
+          candleCloseTime: candleCloseTime,
+          mode: mode.toUpperCase(),
+          expiration: expirationTimes[expiration].label,
+          timestamp: requestTime,
+          result: null,
+          type: 'NORMAL'
+        };
+      });
+
+      setSignals(newSignals);
+      setHistory(prev => [...newSignals, ...prev].slice(0, 30));
+      setNextCandleTime(candleCloseTime);
+      setCanGenerateSignal(false);
       setLoading(false);
     }, 1500);
   };
 
   const markResult = (signalId, result) => {
-    setHistory(prev => prev.map(item =>
-      item.id === signalId ? { ...item, result } : item
-    ));
-
-    if (signal && signal.id === signalId) {
-      setSignal(prev => ({ ...prev, result }));
-    }
-
+    setHistory(prev => prev.map(item => item.id === signalId ? { ...item, result } : item));
+    setSignals(prev => prev.map(item => item.id === signalId ? { ...item, result } : item));
     setStats(prev => ({
       wins: result === 'win' ? prev.wins + 1 : prev.wins,
       losses: result === 'loss' ? prev.losses + 1 : prev.losses
     }));
   };
 
+  const toggleAsset = (asset) => {
+    setSelectedAssets(prev => {
+      if (prev.includes(asset)) {
+        return prev.filter(a => a !== asset);
+      } else if (prev.length < numberOfPairs) {
+        return [...prev, asset];
+      }
+      return prev;
+    });
+  };
+
   const winRate = stats.wins + stats.losses > 0
-    ? ((stats.wins / (stats.wins + stats.losses)) * 100).toFixed(1)
-    : 0;
+    ? ((stats.wins / (stats.wins + stats.losses)) * 100).toFixed(1) : 0;
 
   const renderCandleSequence = (sequence) => {
     if (!sequence) return null;
     const candles = sequence.split('-');
     return (
-      <div className="flex items-center gap-1 justify-center flex-wrap">
-        {candles.map((candle, idx) => (
-          <div
-            key={idx}
-            className={`w-3 h-8 rounded ${candle === 'V' ? 'bg-green-500' : 'bg-red-500'}`}
-            title={candle === 'V' ? 'Verde' : 'Vermelho'}
-          />
-        ))}
+      <div className="flex items-center gap-1 justify-center">
+        {candles.map((candle, idx) => {
+          if (candle === 'MARTELO') {
+            return (
+              <div key={idx} className="flex flex-col items-center">
+                <div className="w-1 h-4 bg-green-500"></div>
+                <div className="w-3 h-2 bg-green-500 rounded"></div>
+              </div>
+            );
+          }
+          if (candle === 'MARTELO_INV') {
+            return (
+              <div key={idx} className="flex flex-col items-center">
+                <div className="w-3 h-2 bg-red-500 rounded"></div>
+                <div className="w-1 h-4 bg-red-500"></div>
+              </div>
+            );
+          }
+          if (candle === 'PAVIO') {
+            return (
+              <div key={idx} className="flex flex-col items-center">
+                <div className="w-1 h-3 bg-yellow-500"></div>
+                <div className="w-3 h-3 bg-yellow-500 rounded"></div>
+              </div>
+            );
+          }
+          return (
+            <div key={idx} className={`w-3 h-8 rounded ${candle === 'V' ? 'bg-green-500' : 'bg-red-500'}`} />
+          );
+        })}
       </div>
     );
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-gray-900 text-white p-4">
-      <div className="max-w-6xl mx-auto">
-        <div className="text-center mb-8 pt-6">
+      <div className="max-w-7xl mx-auto">
+        <div className="text-center mb-6 pt-6">
           <div className="flex items-center justify-center gap-3 mb-2">
             <Activity className="w-10 h-10 text-blue-400" />
             <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">
-              IQ Signals Analyzer
+              IQ Signals Pro
             </h1>
           </div>
-          <p className="text-gray-400">Análise probabilística com IA para operações na próxima vela</p>
-          <div className="flex items-center justify-center gap-2 mt-3 text-sm text-gray-500">
+          <p className="text-gray-400 text-sm">Análise em Tempo Real</p>
+          <div className="flex items-center justify-center gap-2 mt-2 text-sm text-gray-500">
             <Clock className="w-4 h-4" />
             <span>{formatTime(currentTime)}</span>
           </div>
         </div>
+
+        {nextCandleTime && !canGenerateSignal && (
+          <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-yellow-400" />
+                <span className="font-semibold text-yellow-400">Aguardando Fechamento da Vela</span>
+              </div>
+              <span className="text-2xl font-bold text-yellow-400">{formatTimeRemaining(nextCandleTime)}</span>
+            </div>
+            <div className="w-full bg-gray-700 rounded-full h-2">
+              <div className="bg-yellow-400 h-2 rounded-full transition-all" style={{ width: `${candleProgress}%` }}></div>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-3 gap-4 mb-6">
           <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 text-center">
@@ -188,46 +333,104 @@ export default function IQSignalsAnalyzer() {
           </div>
         </div>
 
-        <div className="flex gap-4 mb-6 justify-center">
+        <div className="bg-gray-800/50 rounded-2xl p-6 border border-gray-700 mb-6">
           <button
-            onClick={() => setMode('otc')}
-            className={`px-8 py-3 rounded-lg font-semibold transition-all ${
-              mode === 'otc'
-                ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/50'
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-            }`}
+            onClick={() => setShowSettings(!showSettings)}
+            className="flex items-center gap-2 text-xl font-bold mb-4 text-blue-400 w-full"
           >
-            OTC
+            <Settings className="w-6 h-6" />
+            Configurações {showSettings ? '▼' : '▶'}
           </button>
-          <button
-            onClick={() => setMode('market')}
-            className={`px-8 py-3 rounded-lg font-semibold transition-all ${
-              mode === 'market'
-                ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/50'
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-            }`}
-          >
-            Mercado Aberto
-          </button>
+
+          {showSettings && (
+            <div className="space-y-6">
+              <div>
+                <label className="block text-sm font-semibold mb-3">Mercado</label>
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => setMode('otc')}
+                    className={`px-6 py-3 rounded-lg font-semibold ${mode === 'otc' ? 'bg-blue-600' : 'bg-gray-700'}`}
+                  >
+                    OTC
+                  </button>
+                  <button
+                    onClick={() => setMode('market')}
+                    className={`px-6 py-3 rounded-lg font-semibold ${mode === 'market' ? 'bg-blue-600' : 'bg-gray-700'}`}
+                  >
+                    Mercado Aberto
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold mb-3">Timeframe</label>
+                <div className="flex gap-4">
+                  {Object.entries(expirationTimes).map(([key, value]) => (
+                    <button
+                      key={key}
+                      onClick={() => setExpiration(key)}
+                      className={`px-6 py-3 rounded-lg font-semibold ${expiration === key ? 'bg-purple-600' : 'bg-gray-700'}`}
+                    >
+                      {value.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold mb-3">Quantidade de Pares</label>
+                <div className="flex gap-4">
+                  {[1, 2, 3, 4].map(num => (
+                    <button
+                      key={num}
+                      onClick={() => setNumberOfPairs(num)}
+                      className={`px-6 py-3 rounded-lg font-semibold ${numberOfPairs === num ? 'bg-cyan-600' : 'bg-gray-700'}`}
+                    >
+                      {num}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold mb-3">
+                  Ativos ({selectedAssets.length}/{numberOfPairs})
+                </label>
+                <div className="grid grid-cols-3 gap-2 max-h-48 overflow-y-auto p-2 bg-gray-900/50 rounded-lg">
+                  {assets[mode].map(asset => (
+                    <button
+                      key={asset}
+                      onClick={() => toggleAsset(asset)}
+                      disabled={!selectedAssets.includes(asset) && selectedAssets.length >= numberOfPairs}
+                      className={`px-3 py-2 rounded-lg font-semibold text-sm ${
+                        selectedAssets.includes(asset) ? 'bg-green-600' : 
+                        selectedAssets.length >= numberOfPairs ? 'bg-gray-800 opacity-50' : 'bg-gray-700'
+                      }`}
+                    >
+                      {asset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex gap-4 mb-8 justify-center">
           <button
             onClick={analyzeMarket}
-            disabled={loading}
-            className="px-8 py-4 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 rounded-lg font-bold text-lg shadow-lg shadow-blue-500/50 transition-all disabled:opacity-50"
+            disabled={loading || selectedAssets.length === 0 || !canGenerateSignal}
+            className="px-8 py-4 bg-gradient-to-r from-blue-600 to-cyan-600 rounded-lg font-bold text-lg shadow-lg disabled:opacity-50"
           >
-            {loading && analysisType === 'normal' ? 'Analisando...' : 'Sinal Normal'}
+            {loading && analysisType === 'normal' ? 'Analisando...' : 'Gerar Sinal Normal'}
           </button>
 
           <button
             onClick={analyzeBigPlays}
-            disabled={loading}
-            className="px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 rounded-lg font-bold text-lg shadow-lg shadow-purple-500/50 transition-all disabled:opacity-50 flex items-center gap-2"
+            disabled={loading || selectedAssets.length === 0 || !canGenerateSignal}
+            className="px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 rounded-lg font-bold text-lg shadow-lg disabled:opacity-50 flex items-center gap-2"
           >
-            {loading && analysisType === 'bigplays' ? (
-              'Analisando...'
-            ) : (
+            {loading && analysisType === 'bigplays' ? 'Analisando...' : (
               <>
                 <Zap className="w-5 h-5" />
                 BIGPLAYS
@@ -236,209 +439,134 @@ export default function IQSignalsAnalyzer() {
           </button>
         </div>
 
-        {signal && (
-          <div className={`backdrop-blur-sm rounded-2xl p-6 mb-8 border shadow-xl ${
-            signal.type === 'BIGPLAYS' 
-              ? 'bg-purple-900/30 border-purple-500/50' 
-              : 'bg-gray-800/50 border-gray-700'
-          }`}>
-            <div className="flex items-center justify-between mb-4 flex-wrap gap-4">
-              <div className="flex items-center gap-2">
-                {signal.type === 'BIGPLAYS' ? (
-                  <>
-                    <Zap className="w-6 h-6 text-purple-400" />
-                    <h2 className="text-2xl font-bold text-purple-400">BIGPLAYS</h2>
-                  </>
-                ) : (
-                  <>
-                    <Target className="w-6 h-6 text-blue-400" />
-                    <h2 className="text-2xl font-bold">Sinal Gerado</h2>
-                  </>
-                )}
-              </div>
-              
-              {!signal.result && (
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => markResult(signal.id, 'win')}
-                    className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg font-semibold flex items-center gap-2"
-                  >
-                    <CheckCircle className="w-5 h-5" />
-                    WIN
-                  </button>
-                  <button
-                    onClick={() => markResult(signal.id, 'loss')}
-                    className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg font-semibold flex items-center gap-2"
-                  >
-                    <XCircle className="w-5 h-5" />
-                    LOSS
-                  </button>
-                </div>
-              )}
-              
-              {signal.result && (
-                <div className={`px-6 py-3 rounded-lg font-bold text-lg flex items-center gap-2 ${
-                  signal.result === 'win' 
-                    ? 'bg-green-500/20 border-2 border-green-500 text-green-400' 
-                    : 'bg-red-500/20 border-2 border-red-500 text-red-400'
-                }`}>
-                  {signal.result === 'win' ? (
-                    <>
-                      <Trophy className="w-6 h-6" />
-                      VITÓRIA
-                    </>
-                  ) : (
-                    <>
-                      <XCircle className="w-6 h-6" />
-                      DERROTA
-                    </>
+        {signals.length > 0 && (
+          <div className="space-y-4 mb-8">
+            <h2 className="text-2xl font-bold flex items-center gap-2">
+              <Target className="w-6 h-6 text-blue-400" />
+              Sinais Atuais ({signals.length})
+            </h2>
+            {signals.map(signal => (
+              <div key={signal.id} className={`rounded-2xl p-6 border ${
+                signal.type === 'BIGPLAYS' ? 'bg-purple-900/30 border-purple-500/50' : 'bg-gray-800/50 border-gray-700'
+              }`}>
+                <div className="flex items-center justify-between mb-4 flex-wrap gap-4">
+                  <div className="flex items-center gap-2">
+                    {signal.type === 'BIGPLAYS' && <Zap className="w-6 h-6 text-purple-400" />}
+                    <h3 className="text-xl font-bold text-cyan-400">{signal.asset}</h3>
+                    <span className="text-sm text-gray-400">{signal.expiration}</span>
+                  </div>
+                  
+                  {!signal.result && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => markResult(signal.id, 'win')}
+                        className="px-4 py-2 bg-green-600 rounded-lg font-semibold flex items-center gap-2"
+                      >
+                        <CheckCircle className="w-5 h-5" />
+                        WIN
+                      </button>
+                      <button
+                        onClick={() => markResult(signal.id, 'loss')}
+                        className="px-4 py-2 bg-red-600 rounded-lg font-semibold flex items-center gap-2"
+                      >
+                        <XCircle className="w-5 h-5" />
+                        LOSS
+                      </button>
+                    </div>
+                  )}
+                  
+                  {signal.result && (
+                    <div className={`px-6 py-3 rounded-lg font-bold ${
+                      signal.result === 'win' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                    }`}>
+                      {signal.result === 'win' ? 'VITÓRIA' : 'DERROTA'}
+                    </div>
                   )}
                 </div>
-              )}
-            </div>
 
-            {signal.type === 'BIGPLAYS' && (
-              <div className="grid md:grid-cols-3 gap-4 mb-6">
-                <div className="bg-purple-900/30 border border-purple-500/30 rounded-lg p-4 text-center">
-                  <div className="text-purple-300 text-sm mb-2">Padrão</div>
-                  <div className="text-lg font-bold text-purple-400">{signal.pattern}</div>
-                </div>
-                
-                <div className="bg-purple-900/30 border border-purple-500/30 rounded-lg p-4 text-center">
-                  <div className="text-purple-300 text-sm mb-2">Quadrante 5 Velas</div>
-                  {renderCandleSequence(signal.candleSequence)}
-                  <div className="text-xs text-purple-300 mt-1">{signal.candleSequence}</div>
-                </div>
-                
-                <div className="bg-purple-900/30 border border-purple-500/30 rounded-lg p-4 text-center">
-                  <div className="text-purple-300 text-sm mb-2">Força</div>
-                  <div className={`text-xl font-bold ${
-                    signal.strength === 'EXTREMA' ? 'text-purple-400' : 
-                    signal.strength === 'MUITO ALTA' ? 'text-orange-400' : 'text-yellow-400'
-                  }`}>
-                    {signal.strength}
+                {signal.type === 'BIGPLAYS' && (
+                  <div className="grid md:grid-cols-3 gap-4 mb-4">
+                    <div className="bg-purple-900/30 border border-purple-500/30 rounded-lg p-3 text-center">
+                      <div className="text-purple-300 text-xs mb-1">Padrão</div>
+                      <div className="text-sm font-bold text-purple-400">{signal.pattern}</div>
+                    </div>
+                    
+                    <div className="bg-purple-900/30 border border-purple-500/30 rounded-lg p-3 text-center">
+                      <div className="text-purple-300 text-xs mb-1">Sequência</div>
+                      {renderCandleSequence(signal.candleSequence)}
+                    </div>
+                    
+                    <div className="bg-purple-900/30 border border-purple-500/30 rounded-lg p-3 text-center">
+                      <div className="text-purple-300 text-xs mb-1">Força</div>
+                      <div className="text-lg font-bold text-purple-400">{signal.strength}</div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            )}
-            
-            <div className="grid md:grid-cols-2 gap-6">
-              <div className="space-y-4">
-                <div className="bg-gray-900/50 rounded-lg p-4">
-                  <div className="text-gray-400 text-sm mb-1">Ativo</div>
-                  <div className="text-2xl font-bold text-cyan-400">{signal.asset}</div>
-                </div>
-                
-                <div className="bg-gray-900/50 rounded-lg p-4">
-                  <div className="text-gray-400 text-sm mb-1">Mercado</div>
-                  <div className="text-xl font-semibold">{signal.mode}</div>
-                </div>
+                )}
 
-                <div className="bg-gray-900/50 rounded-lg p-4">
-                  <div className="text-gray-400 text-sm mb-1">Expiração</div>
-                  <div className="text-xl font-semibold">{signal.expiration}</div>
-                </div>
-              </div>
+                {signal.specialFeature && signal.specialFeature.detected && (
+                  <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                    <div className="text-yellow-400 text-sm font-semibold">
+                      🔥 Padrão Especial - Razão {signal.specialFeature.wickRatio}x
+                    </div>
+                  </div>
+                )}
 
-              <div className="space-y-4">
-                <div className={`rounded-lg p-4 border-2 ${
-                  signal.direction === 'CALL' ? 'bg-green-500/20 border-green-500' : 'bg-red-500/20 border-red-500'
-                }`}>
-                  <div className="text-gray-300 text-sm mb-1">Direção</div>
-                  <div className={`text-3xl font-bold flex items-center gap-2 ${
-                    signal.direction === 'CALL' ? 'text-green-400' : 'text-red-400'
+                <div className="grid md:grid-cols-3 gap-4">
+                  <div className={`rounded-lg p-3 border-2 ${
+                    signal.direction === 'CALL' ? 'bg-green-500/20 border-green-500' : 'bg-red-500/20 border-red-500'
                   }`}>
-                    {signal.direction === 'CALL' ? <TrendingUp className="w-8 h-8" /> : <TrendingDown className="w-8 h-8" />}
-                    {signal.direction}
+                    <div className="text-xs mb-1">Direção</div>
+                    <div className={`text-2xl font-bold flex items-center gap-2 ${
+                      signal.direction === 'CALL' ? 'text-green-400' : 'text-red-400'
+                    }`}>
+                      {signal.direction === 'CALL' ? <TrendingUp /> : <TrendingDown />}
+                      {signal.direction}
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-900/50 rounded-lg p-3">
+                    <div className="text-xs mb-1">Probabilidade</div>
+                    <div className="text-2xl font-bold text-yellow-400">{signal.accuracy}%</div>
+                  </div>
+
+                  <div className="bg-gray-900/50 rounded-lg p-3">
+                    <div className="text-xs mb-1">Entrada</div>
+                    <div className="text-lg font-semibold text-green-400">{signal.entryTime}</div>
                   </div>
                 </div>
 
-                <div className="bg-gray-900/50 rounded-lg p-4">
-                  <div className="text-gray-400 text-sm mb-1">Probabilidade</div>
-                  <div className={`text-3xl font-bold ${
-                    parseFloat(signal.accuracy) >= 85 ? 'text-green-400' : 
-                    parseFloat(signal.accuracy) >= 75 ? 'text-yellow-400' : 'text-orange-400'
-                  }`}>
-                    {signal.accuracy}%
-                  </div>
+                <div className="mt-4 rounded-lg p-3 bg-blue-500/10 border border-blue-500/30 text-sm">
+                  {signal.reasoning}
                 </div>
               </div>
-            </div>
-
-            <div className={`mt-6 rounded-lg p-4 border ${
-              signal.type === 'BIGPLAYS'
-                ? 'bg-purple-500/10 border-purple-500/30'
-                : 'bg-blue-500/10 border-blue-500/30'
-            }`}>
-              <div className={`text-sm font-semibold mb-2 ${
-                signal.type === 'BIGPLAYS' ? 'text-purple-400' : 'text-blue-400'
-              }`}>
-                {signal.type === 'BIGPLAYS' ? '⚡ Análise BigPlays' : '📊 Análise'}
-              </div>
-              <div className="text-gray-300 text-sm">{signal.reasoning}</div>
-            </div>
-
-            <div className="mt-6 grid grid-cols-2 gap-4 pt-6 border-t border-gray-700">
-              <div className="text-center">
-                <div className="text-gray-400 text-sm mb-1">Solicitado</div>
-                <div className="text-lg font-semibold text-blue-400">{signal.requestTime}</div>
-              </div>
-              <div className="text-center">
-                <div className="text-gray-400 text-sm mb-1">Entrada</div>
-                <div className="text-lg font-semibold text-green-400">{signal.entryTime}</div>
-              </div>
-            </div>
+            ))}
           </div>
         )}
 
         {history.length > 0 && (
-          <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-6 border border-gray-700">
-            <div className="flex items-center gap-2 mb-4">
+          <div className="bg-gray-800/50 rounded-2xl p-6 border border-gray-700">
+            <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
               <BarChart3 className="w-6 h-6 text-blue-400" />
-              <h2 className="text-2xl font-bold">Histórico</h2>
-            </div>
+              Histórico
+            </h2>
             
-            <div className="space-y-3">
+            <div className="space-y-2 max-h-96 overflow-y-auto">
               {history.map((item) => (
-                <div key={item.id} className={`rounded-lg p-4 ${
-                  item.type === 'BIGPLAYS' ? 'bg-purple-900/20 border border-purple-500/30' : 'bg-gray-900/50'
-                }`}>
-                  <div className="flex items-center justify-between flex-wrap gap-3">
-                    <div className="flex items-center gap-4">
-                      {item.type === 'BIGPLAYS' && <Zap className="w-5 h-5 text-purple-400" />}
-                      <div>
-                        <div className="font-semibold text-cyan-400">{item.asset}</div>
-                        <div className="text-sm text-gray-400">
-                          {item.mode} • {item.entryTime}
-                          {item.pattern && ` • ${item.pattern}`}
-                        </div>
-                      </div>
+                <div key={item.id} className="rounded-lg p-3 bg-gray-900/50 text-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <div className="font-semibold text-cyan-400">{item.asset}</div>
+                      <div className="text-xs text-gray-400">{item.expiration} • {item.entryTime}</div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <div className="text-right">
-                        <div className={`text-lg font-bold ${item.direction === 'CALL' ? 'text-green-400' : 'text-red-400'}`}>
-                          {item.direction}
-                        </div>
-                        <div className="text-sm text-yellow-400">{item.accuracy}%</div>
+                    <div className="flex items-center gap-2">
+                      <div className={`font-bold ${item.direction === 'CALL' ? 'text-green-400' : 'text-red-400'}`}>
+                        {item.direction}
                       </div>
-                      
                       {item.result && (
-                        <div className={`px-3 py-1 rounded-lg font-bold text-sm flex items-center gap-1 ${
-                          item.result === 'win' 
-                            ? 'bg-green-500/20 border border-green-500 text-green-400' 
-                            : 'bg-red-500/20 border border-red-500 text-red-400'
+                        <div className={`px-2 py-1 rounded text-xs ${
+                          item.result === 'win' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
                         }`}>
-                          {item.result === 'win' ? (
-                            <>
-                              <CheckCircle className="w-4 h-4" />
-                              WIN
-                            </>
-                          ) : (
-                            <>
-                              <XCircle className="w-4 h-4" />
-                              LOSS
-                            </>
-                          )}
+                          {item.result === 'win' ? 'WIN' : 'LOSS'}
                         </div>
                       )}
                     </div>
